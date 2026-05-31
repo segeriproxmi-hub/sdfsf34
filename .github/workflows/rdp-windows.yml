@@ -1,0 +1,50 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "session minutes"
+        required: false
+        default: "340"
+
+jobs:
+  run:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: setup
+        shell: pwsh
+        env:
+          PW: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          if (-not $env:PW) { throw "RDP_PASSWORD empty" }
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0
+          Set-LocalUser -Name runneradmin -Password (ConvertTo-SecureString $env:PW -AsPlainText -Force)
+
+      - name: net
+        shell: pwsh
+        env:
+          TK: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if (-not $env:TK) { throw "TS_AUTHKEY empty" }
+          Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile ts.msi
+          Start-Process msiexec.exe -ArgumentList '/i','ts.msi','/quiet','/norestart' -Wait
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          for ($i=0; $i -lt 10 -and -not (Test-Path $ts); $i++) { Start-Sleep 3 }
+          & $ts up --authkey=$env:TK --hostname=ci-box --accept-routes --timeout=60s
+          Start-Sleep 5
+          echo "tailnet ip:"
+          & $ts ip -4
+
+      - name: run
+        shell: pwsh
+        run: |
+          $m = [int]"${{ github.event.inputs.minutes }}"
+          if ($m -le 0 -or $m -gt 345) { $m = 340 }
+          for ($i = 1; $i -le $m; $i++) {
+            Start-Sleep 60
+            if ($i % 15 -eq 0) { echo "ok $i/$m" }
+          }
