@@ -1,5 +1,9 @@
 name: build
 
+# v0.2.0 - windows-2022 + debloat (lite). Tunnel: Tailscale.
+# Debloat bersifat best-effort: kalau ada yang diblok (tamper protection),
+# job tetap lanjut sampai RDP nyala. Secrets: TS_AUTHKEY, RDP_PASSWORD.
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,7 +14,7 @@ on:
 
 jobs:
   run:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 350
     steps:
       - name: setup
@@ -23,6 +27,46 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0
           Set-LocalUser -Name runneradmin -Password (ConvertTo-SecureString $env:PW -AsPlainText -Force)
+
+      - name: lite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          # --- Defender: matikan real-time (best-effort, bisa diblok tamper) ---
+          try {
+            Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+            Set-MpPreference -DisableScriptScanning $true -DisableBehaviorMonitoring $true -DisableIOAVProtection $true -ErrorAction SilentlyContinue
+            echo "[lite] defender realtime OFF"
+          } catch {
+            echo "[lite] defender realtime BLOCKED (tamper) -> pakai exclusion"
+            Add-MpPreference -ExclusionPath "C:\Users\runneradmin" -ErrorAction SilentlyContinue
+            Add-MpPreference -ExclusionProcess "steam.exe","PixelWorlds.exe" -ErrorAction SilentlyContinue
+          }
+
+          # --- Services berat yang aman dimatikan ---
+          $svc = @('WSearch','SysMain','DiagTrack','Spooler','MapsBroker','WbioSrvc',
+                   'XblAuthManager','XblGameSave','XboxGipSvc','XboxNetApiSvc')
+          foreach ($s in $svc) {
+            try {
+              Stop-Service $s -Force -ErrorAction SilentlyContinue
+              Set-Service $s -StartupType Disabled -ErrorAction SilentlyContinue
+              echo "[lite] disabled $s"
+            } catch { echo "[lite] skip $s" }
+          }
+
+          # --- Visual: best performance + matikan wallpaper/font smoothing ---
+          try {
+            $vfx = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects'
+            New-Item -Path $vfx -Force | Out-Null
+            Set-ItemProperty $vfx -Name VisualFXSetting -Value 2
+            Set-ItemProperty 'HKCU:\Control Panel\Desktop' -Name Wallpaper -Value "" -ErrorAction SilentlyContinue
+            Set-ItemProperty 'HKCU:\Control Panel\Desktop' -Name FontSmoothing -Value "0" -ErrorAction SilentlyContinue
+            Set-ItemProperty 'HKCU:\Control Panel\Desktop' -Name DragFullWindows -Value "0" -ErrorAction SilentlyContinue
+            echo "[lite] visual = best performance"
+          } catch { echo "[lite] visual tweak skipped" }
+
+          echo "[lite] done"
 
       - name: net
         shell: pwsh
